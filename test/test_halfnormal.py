@@ -26,5 +26,5 @@ sfa.simData(beta_t, su_t, sv_t)
 # -----------------------------------------------------------------------------
 sfa.fitMaxl()
 print('beta_t:', beta_t, ', beta_soln:', sfa.beta_soln)
-print('su_t:', su_t, ', beta_soln:', sfa.su_soln)
-print('sv_t:', sv_t, ', beta_soln:', sfa.sv_soln)
+print('su_t:', su_t, ', su_soln:', sfa.su_soln)
+print('sv_t:', sv_t, ', sv_soln:', sfa.sv_soln)
