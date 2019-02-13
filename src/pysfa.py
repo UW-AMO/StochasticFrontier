@@ -2,10 +2,11 @@
 
 import numpy as np
 
-from numpy         import exp, log, sqrt, pi
-from numpy.linalg  import det, norm, solve
-from scipy.special import erf, erfc
-from ipopt         import minimize_ipopt
+from numpy             import exp, log, sqrt, pi
+from numpy.linalg      import det, norm, solve
+from scipy.special     import erf, erfc
+from ipopt             import minimize_ipopt
+from sfa_utils.npufunc import log_erfc
 
 
 class SFA:
@@ -59,20 +60,22 @@ class SFA:
 		if self.vtype == 'hnl':
 			return np.sum(
 				0.5*r**2/v_suv + 0.5*log(2.0*pi*v_suv) -
-				log(1e-20+erfc(sv*r/sqrt(2.0*v_su*v_suv)))
+				log_erfc(sv*r/sqrt(2.0*v_su*v_suv))
 				)
 		elif self.vtype == 'exp':
 			a = (v_su + sv*r)/sqrt(2.0*v_su)
 			# f = np.sum(-0.5*(v_su + 2.0*sv*r)/sv**2 - log(0.5*erfc(a/sv)/sv))
 			f = 0.0
-			for i in range(a.size):
-				if abs(sv/a[i]) < 0.1:
-					f += 0.5*r[i]**2/v_su[i] + 0.5*log(4.0*pi*a[i]**2) -\
-						log(1.0-0.5*sv**2/a[i]**2)
-				else:
-					f += -0.5*(v_su[i] + 2.0*sv*r[i])/sv**2 -\
-						log(0.5*erfc(a[i]/sv)/sv)
-			
+			if sv < 1e-2:
+				return np.sum(
+					0.5*r**2/v_su + 0.5*log(4.0*pi*a**2) -\
+					log(1.0-0.5*sv**2/a**2)
+					)
+			else:
+				return np.sum(
+					-0.5*(v_su + 2.0*sv*r)/sv**2 + log(2.0*sv) -\
+					log_erfc(a/sv)
+					)
 			return f
 
 	# maximum likelihood objective function for solver

@@ -2,6 +2,8 @@
 #include "math.h"
 #include "numpy/ndarraytypes.h"
 #include "numpy/ufuncobject.h"
+#include "complex.h"
+
 
 /*
  * log_erfc.c
@@ -29,32 +31,6 @@ static PyMethodDef LogErfcMethods[] = {
 
 /* The loop definitions must precede the PyMODINIT_FUNC. */
 
-static void long_double_log_erfc(char **args, npy_intp *dimensions,
-                              npy_intp* steps, void* data)
-{
-    npy_intp i;
-    npy_intp n = dimensions[0];
-    char *in = args[0], *out=args[1];
-    npy_intp in_step = steps[0], out_step = steps[1];
-
-    long double tmp;
-
-    for (i = 0; i < n; i++) {
-        /*BEGIN main ufunc computation*/
-        tmp = *(long double *)in;
-        if (tmp > 25.0l) {
-            *((long double *)out) = -tmp*tmp + \
-                logl((1.0l - 0.5l/(tmp*tmp))/(tmp*1.7724538509055159l));
-        } else {
-            *((long double *)out) = logl(erfcl(tmp));
-        }
-        /*END main ufunc computation*/
-
-        in += in_step;
-        out += out_step;
-    }
-}
-
 static void double_log_erfc(char **args, npy_intp *dimensions,
                          npy_intp* steps, void* data)
 {
@@ -64,13 +40,14 @@ static void double_log_erfc(char **args, npy_intp *dimensions,
     npy_intp in_step = steps[0], out_step = steps[1];
 
     double tmp;
+    double sqrt_pi = 1.7724538509055159;
 
     for (i = 0; i < n; i++) {
         /*BEGIN main ufunc computation*/
         tmp = *(double *)in;
         if (tmp > 25.0) {
             *((double *)out) = -tmp*tmp + \
-                log((1.0 - 0.5/(tmp*tmp))/(tmp*1.7724538509055159));
+                log((1.0 - 0.5/(tmp*tmp))/(tmp*sqrt_pi));
         } else {
             *((double *)out) = log(erfc(tmp));
         }
@@ -81,27 +58,33 @@ static void double_log_erfc(char **args, npy_intp *dimensions,
     }
 }
 
-static void float_log_erfc(char **args, npy_intp *dimensions,
-                        npy_intp* steps, void* data)
+static void cdouble_log_erfc(char **args, npy_intp *dimensions,
+                         npy_intp* steps, void* data)
 {
     npy_intp i;
     npy_intp n = dimensions[0];
-    char *in=args[0], *out = args[1];
+    char *in = args[0], *out = args[1];
     npy_intp in_step = steps[0], out_step = steps[1];
 
-    float tmp;
+    double complex tmp;
+    double tmp_r;
+    double tmp_i;
+    double sqrt_pi = 1.7724538509055159;
 
     for (i = 0; i < n; i++) {
         /*BEGIN main ufunc computation*/
-        tmp = *(float *)in;
-        if (tmp > 25.0f) {
-            *((float *)out) = -tmp*tmp + \
-                logf((1.0f - 0.5f/(tmp*tmp))/(tmp*1.7724538509055159f));
+        tmp = *(double complex *)in;
+        tmp_r = creal(tmp);
+        tmp_i = cimag(tmp);
+        if (tmp_r > 25.0) {
+            *((double complex *)out) = -tmp*tmp + \
+                log((1.0 - 0.5/(tmp*tmp))/(tmp*sqrt_pi)) - 
+                I*tmp_i*(2.0*tmp_r + 1.0/tmp_r - 1.0/(tmp_r*tmp_r*tmp_r));
         } else {
-            *((float *)out) = logf(erfcf(tmp));
+            *((double complex *)out) = log(erfc(tmp_r)) - \
+                I*tmp_i*2.0*exp(-tmp_r*tmp_r)/(erfc(tmp_r)*sqrt_pi);
         }
         /*END main ufunc computation*/
-
         in += in_step;
         out += out_step;
     }
@@ -109,14 +92,12 @@ static void float_log_erfc(char **args, npy_intp *dimensions,
 
 
 /*This gives pointers to the above functions*/
-PyUFuncGenericFunction funcs[3] = {&float_log_erfc,
-                                   &double_log_erfc,
-                                   &long_double_log_erfc};
+PyUFuncGenericFunction funcs[2] = {&double_log_erfc,
+                                &cdouble_log_erfc};
 
-static char types[6] = {NPY_FLOAT, NPY_FLOAT,
-                NPY_DOUBLE,NPY_DOUBLE,
-                NPY_LONGDOUBLE, NPY_LONGDOUBLE};
-static void *data[3] = {NULL, NULL, NULL};
+static char types[4] = {NPY_DOUBLE,NPY_DOUBLE,
+                        NPY_CDOUBLE,NPY_CDOUBLE};
+static void *data[2] = {NULL, NULL};
 
 #if PY_VERSION_HEX >= 0x03000000
 static struct PyModuleDef moduledef = {

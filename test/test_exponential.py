@@ -8,7 +8,7 @@ from pysfa import SFA
 # generate data
 # -----------------------------------------------------------------------------
 np.random.seed(123)
-m = 100
+m = 1000
 k = 2
 x = np.random.randn(m,k)
 s = np.ones(m)*0.1
