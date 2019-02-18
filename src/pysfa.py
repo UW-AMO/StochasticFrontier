@@ -256,7 +256,7 @@ class SFA:
 				sqrt(self.D.dot(deta_t))
 		self.Y = self.X.dot(beta_t) + self.EU - self.EV + self.E
 
-	# optimize the maximum likelihood
+	# optimization: the maximum likelihood
 	# -------------------------------------------------------------------------
 	def optimizeSFA(self, print_level=0):
 		# create problem
@@ -288,12 +288,13 @@ class SFA:
 		# solver the problem
 		soln, info = handle.solve(x0)
 		# extract the solution
+		self.soln = soln
+		self.info = info
 		self.beta_soln = soln[self.id_beta]
 		self.gama_soln = soln[self.id_gama]
 		self.deta_soln = soln[self.id_deta]
-		self.soln_info = info
 
-	# optimization: trimming method on the method
+	# optimization: trimming method on the maximum likelihood
 	# -------------------------------------------------------------------------
 	def optimizeSFAWithTrimming(self, h, stepsize=1.0, max_iter=100, tol=1e-6,
 			verbose=False):
@@ -301,8 +302,8 @@ class SFA:
 		self.addTrimming(h)
 		#
 		# initialize the iteration
-		self.optimizeSFA(method=method)
-		g = self.wGrad(method)
+		self.optimizeSFA()
+		g = self.wGrad(self.soln)
 		#
 		# start iteration
 		err = tol + 1.0
@@ -317,8 +318,8 @@ class SFA:
 			#
 			np.copyto(self.w, w_new)
 			#
-			self.optimizeMR(method=method)
-			g = self.wGrad(method)
+			self.optimizeSFA()
+			g = self.wGrad(self.soln)
 			#
 			if verbose:
 				print('iter %4d, err %8.2e' % (iter_count, err))
@@ -327,10 +328,10 @@ class SFA:
 				print('trimming reach maximum number of iterations')
 				break
 
-	def wGrad(self, w):
-		beta = self.beta_soln
-		gama = self.gama_soln
-		deta = self.deta_soln
+	def wGrad(self, x):
+		beta = x[self.id_beta]
+		gama = x[self.id_gama]
+		deta = x[self.id_deta]
 		# residual and all variances and stds
 		r  = self.Y - self.X.dot(beta)
 		#
@@ -344,7 +345,7 @@ class SFA:
 		v2 = self.V + vu + vv
 		#
 		if self.vtype == 'half_normal':
-			g = 0.5*r**2/v2 + 0.5*log(2.0*pi*v2) -
+			g = 0.5*r**2/v2 + 0.5*log(2.0*pi*v2) - \
 				log_erfc(r*sv/sqrt(2.0*v1*v2))
 		if self.vtype == 'exponential':
 			g = np.zeros(self.N)
@@ -387,50 +388,19 @@ class sfaObj:
 	# -------------------------------------------------------------------------
 	def objective(self, x):
 		sfa = self.sfa
-		# extract beta, gama and deta
-		beta = x[sfa.id_beta]
-		gama = x[sfa.id_gama]
-		deta = x[sfa.id_deta]
-		# residual and all variances and stds
-		r  = sfa.Y - sfa.X.dot(beta)
-		#
-		vu = sfa.Z.dot(gama)
-		vv = sfa.D.dot(deta)
-		#
-		su = sqrt(vu)
-		sv = sqrt(vv)
-		#
-		v1 = sfa.V + vu
-		v2 = sfa.V + vu + vv
-		#
 		# likelihood
-		# ---------------------------------------------------------------------
-		if sfa.vtype == 'half_normal':
-			g = 0.5*r**2/v2 + 0.5*log(2.0*pi*v2) -
-				log_erfc(r*sv/sqrt(2.0*v1*v2))
-		if sfa.vtype == 'exponential':
-			g = np.zeros(sfa.N)
-			a = (v1 + r*sv)/sqrt(2.0*v1)
-			for i in range(a.size):
-				if abs(sv[i]/a[i]) < 0.1:
-					g[i] = 0.5*r[i]**2/v1[i] + 0.5*log(4.0*pi*a[i]**2) -\
-						log(1.0-0.5*vv[i]/a[i]**2)
-				else:
-					g[i] = -0.5*(v1[i] + 2.0*r[i]*sv[i])/vv[i] -\
-						log(0.5*erfc(a[i]/sv[i])/sv[i])
+		g = sfa.wGrad(x)
 		#
 		# trimming
 		# ---------------------------------------------------------------------
 		if sfa.use_trimming:
-			f = np.sum(g)
-		else:
 			f = sfa.w.dot(g)
+		else:
+			f = np.sum(g)
 		#
 		# add priors
 		# ---------------------------------------------------------------------
-		f += np.sum( (beta - sfa.beta_gprior[0])**2/sfa.beta_gprior[1] )
-		f += np.sum( (gama - sfa.gama_gprior[0])**2/sfa.gama_gprior[1] )
-		f += np.sum( (deta - sfa.deta_gprior[0])**2/sfa.deta_gprior[1] )
+		f += np.sum( (x - sfa.gprior[0])**2/sfa.gprior[1] )
 		#
 		return f
 
