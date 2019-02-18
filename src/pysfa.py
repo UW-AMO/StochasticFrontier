@@ -7,6 +7,7 @@ from numpy             import exp, log, sqrt, pi
 from numpy.linalg      import det, norm, solve
 from scipy.special     import erf, erfc
 from scipy.optimize    import bisect
+from bspline           import *
 from sfa_utils.npufunc import log_erfc
 
 
@@ -238,6 +239,113 @@ class SFA:
 		#
 		self.use_trimming = True
 
+	# add bspline
+	# -------------------------------------------------------------------------
+	def addBSpline(self, knots, degree, col_id=1,
+			l_linear=False,
+			r_linear=False,
+			bspline_uprior=None,
+			bspline_gprior=None,
+			bspline_mono=None):
+		# check if there enough columns in x cov
+		assert self.k_beta>=2, 'no x cov for bspline.'
+		#
+		# check the priors of bspline
+		self.checkUPrior(bspline_uprior, 'bspline_uprior', vsize=len(knots)-1)
+		self.checkUPrior(bspline_gprior, 'bspline_gprior', vsize=len(knots)-1)
+		self.bspline_uprior = bspline_uprior
+		self.bspline_gprior = bspline_gprior
+		#
+		# create design matrix
+		X_bs, H_bs = dmatrix(self.X[:,col_id], knots, degree,
+					l_linear=l_linear, r_linear=r_linear)
+		#
+		self.k_beta_bs = X_bs.shape[1]
+		#
+		# constrains: monotonicity
+		C_bs = np.array([]).reshape(0, self.k_beta_bs)
+		c_bs = np.array([]).reshape(2, 0)
+		#
+		if bspline_mono is not None:
+			C_bs = self.seqDiffMat(self.k_beta_bs)
+			#
+			if bspline_mono == 'increasing':
+				c_bs = self.positiveUPrior(self.k_beta_bs - 1)
+			if bspline_mono == 'decreasing':
+				c_bs = self.negativeUPrior(self.k_beta_bs - 1)
+		#
+		# constrains: uniform prior on bspline
+		if bspline_uprior is not None:
+			C_bs = np.vstack((H_bs, C_bs))
+			c_bs = np.hstack((bspline_uprior, c_bs))
+
+		# extend x and priors
+		self.bsplineExtend(X_bs, H_bs, C_bs, c_bs, col_id)
+
+
+	def bsplineExtend(self, X_bs, H_bs, C_bs, c_bs, col_id):
+		# decide the delete cols id
+		del_id = [col_id]
+		if np.all(self.X[:,0]==1.0): del_id.append(0)
+		#
+		# extend the current X cov matrix
+		# ---------------------------------------------------------------------
+		self.X = self.delThenStack(self.X, X_bs, del_id)
+		self.k_beta = self.X.shape[1]
+		self.k = self.k_beta + self.k_gama + self.k_deta
+		#
+		self.id_beta = slice(0, self.k_beta)
+		self.id_gama = slice(self.k_beta, self.k_beta + self.k_gama)
+		self.id_deta = slice(self.k_beta + self.k_gama, self.k)
+		#
+		# add to the current beta uprior
+		# ---------------------------------------------------------------------
+		beta_uprior_bs = self.defaultUPrior(self.k_beta_bs)
+		self.beta_uprior =\
+			self.delThenStack(self.beta_uprior, beta_uprior_bs, del_id)
+		self.uprior = np.hstack((
+			self.beta_uprior,
+			self.gama_uprior,
+			self.deta_uprior
+			))
+		#
+		# add to the current beta gprior
+		# ---------------------------------------------------------------------
+		beta_gprior_bs = self.defaultGPrior(self.k_beta_bs)
+		self.beta_gprior = \
+			self.delThenStack(self.beta_gprior, beta_gprior_bs, del_id)
+		self.gprior = np.hstack((
+			self.beta_gprior,
+			self.gama_gprior,
+			self.deta_gprior
+			))
+		#
+		# add bspline prior
+		# ---------------------------------------------------------------------
+		self.H = np.hstack(
+			(H_bs, np.zeros((H_bs.shape[0], self.k_beta - self.k_beta_bs))))
+		#
+		# add bspline constraints
+		# ---------------------------------------------------------------------
+		if C_bs.size > 0:
+			C = np.hstack(
+				(C_bs, np.zeros((C_bs.shape[0], self.k - self.k_beta_bs))))
+			self.constraint_matrix = C
+			self.constraint_values = c_bs
+
+	def seqDiffMat(self, k):
+		M = np.zeros((k-1,k))
+		diag_id0 = np.diag_indices(M.shape[0])
+		diag_id1 = (diag_id0[0],diag_id0[1]+1)
+		M[diag_id0] = -1.0
+		M[diag_id1] =  1.0
+		#
+		return M
+
+	def delThenStack(self, X, Y, del_id):
+		X = np.delete(X, del_id, 1)
+		return np.hstack((Y, X))
+
 	# data simulation
 	# -------------------------------------------------------------------------
 	def simData(self, beta_t, gama_t, deta_t):
@@ -401,6 +509,12 @@ class sfaObj:
 		# add priors
 		# ---------------------------------------------------------------------
 		f += np.sum( (x - sfa.gprior[0])**2/sfa.gprior[1] )
+		#
+		# add bspline priors
+		# ---------------------------------------------------------------------
+		if sfa.bspline_gprior is not None:
+			f += np.sum( (mr.H.dot(beta) - mr.bspline_gprior[0])**2 /
+					mr.bspline_gprior[1] )
 		#
 		return f
 
