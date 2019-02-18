@@ -6,6 +6,7 @@ import ipopt
 from numpy             import exp, log, sqrt, pi
 from numpy.linalg      import det, norm, solve
 from scipy.special     import erf, erfc
+from scipy.optimize    import bisect
 from sfa_utils.npufunc import log_erfc
 
 
@@ -223,7 +224,20 @@ class SFA:
 			self.gama_gprior,
 			self.deta_gprior
 			))
-		
+	
+	# add trimming
+	# -------------------------------------------------------------------------
+	def addTrimming(self, h):
+		# check if h is valid
+		assert 0<h<self.N, 'h should be positive and strictly less than N.'
+		#
+		self.h = h
+		self.w = np.repeat(self.h/self.N, self.N)
+		#
+		print('trim %0.3f of the data' % (1.0 - self.h/self.N))
+		#
+		self.use_trimming = True
+
 	# data simulation
 	# -------------------------------------------------------------------------
 	def simData(self, beta_t, gama_t, deta_t):
@@ -279,6 +293,83 @@ class SFA:
 		self.deta_soln = soln[self.id_deta]
 		self.soln_info = info
 
+	# optimization: trimming method on the method
+	# -------------------------------------------------------------------------
+	def optimizeSFAWithTrimming(self, h, stepsize=1.0, max_iter=100, tol=1e-6,
+			verbose=False):
+		# add the trimming parameters into object
+		self.addTrimming(h)
+		#
+		# initialize the iteration
+		self.optimizeSFA(method=method)
+		g = self.wGrad(method)
+		#
+		# start iteration
+		err = tol + 1.0
+		iter_count = 0
+		#
+		while err >= tol:
+			# proximal gradient step
+			w_new = self.wProj(self.w - stepsize*g)
+			# update information
+			err = np.linalg.norm(w_new - self.w)/stepsize
+			iter_count += 1
+			#
+			np.copyto(self.w, w_new)
+			#
+			self.optimizeMR(method=method)
+			g = self.wGrad(method)
+			#
+			if verbose:
+				print('iter %4d, err %8.2e' % (iter_count, err))
+			#
+			if iter_count >= max_iter:
+				print('trimming reach maximum number of iterations')
+				break
+
+	def wGrad(self, w):
+		beta = self.beta_soln
+		gama = self.gama_soln
+		deta = self.deta_soln
+		# residual and all variances and stds
+		r  = self.Y - self.X.dot(beta)
+		#
+		vu = self.Z.dot(gama)
+		vv = self.D.dot(deta)
+		#
+		su = sqrt(vu)
+		sv = sqrt(vv)
+		#
+		v1 = self.V + vu
+		v2 = self.V + vu + vv
+		#
+		if self.vtype == 'half_normal':
+			g = 0.5*r**2/v2 + 0.5*log(2.0*pi*v2) -
+				log_erfc(r*sv/sqrt(2.0*v1*v2))
+		if self.vtype == 'exponential':
+			g = np.zeros(self.N)
+			a = (v1 + r*sv)/sqrt(2.0*v1)
+			for i in range(a.size):
+				if abs(sv[i]/a[i]) < 0.1:
+					g[i] = 0.5*r[i]**2/v1[i] + 0.5*log(4.0*pi*a[i]**2) -\
+						log(1.0-0.5*vv[i]/a[i]**2)
+				else:
+					g[i] = -0.5*(v1[i] + 2.0*r[i]*sv[i])/vv[i] -\
+						log(0.5*erfc(a[i]/sv[i])/sv[i])
+		#
+		return g
+
+	def wProj(self, w):
+		a = np.min(w) - 1.0
+		b = np.max(w) - 0.0
+		#
+		f = lambda x:\
+		    np.sum(np.maximum(np.minimum(w - x, 1.0), 0.0)) - self.h
+		#
+		x = bisect(f, a, b)
+		#
+		return np.maximum(np.minimum(w - x, 1.0), 0.0)
+
 # IPOPT objective: maximum likelihood
 # =============================================================================
 class sfaObj:
@@ -315,18 +406,25 @@ class sfaObj:
 		# likelihood
 		# ---------------------------------------------------------------------
 		if sfa.vtype == 'half_normal':
-			f = np.sum(0.5*r**2/v2 + 0.5*log(2.0*pi*v2) -
-				log_erfc(r*sv/sqrt(2.0*v1*v2)))
+			g = 0.5*r**2/v2 + 0.5*log(2.0*pi*v2) -
+				log_erfc(r*sv/sqrt(2.0*v1*v2))
 		if sfa.vtype == 'exponential':
-			f = 0.0
+			g = np.zeros(sfa.N)
 			a = (v1 + r*sv)/sqrt(2.0*v1)
 			for i in range(a.size):
 				if abs(sv[i]/a[i]) < 0.1:
-					f += 0.5*r[i]**2/v1[i] + 0.5*log(4.0*pi*a[i]**2) -\
+					g[i] = 0.5*r[i]**2/v1[i] + 0.5*log(4.0*pi*a[i]**2) -\
 						log(1.0-0.5*vv[i]/a[i]**2)
 				else:
-					f += -0.5*(v1[i] + 2.0*r[i]*sv[i])/vv[i] -\
+					g[i] = -0.5*(v1[i] + 2.0*r[i]*sv[i])/vv[i] -\
 						log(0.5*erfc(a[i]/sv[i])/sv[i])
+		#
+		# trimming
+		# ---------------------------------------------------------------------
+		if sfa.use_trimming:
+			f = np.sum(g)
+		else:
+			f = sfa.w.dot(g)
 		#
 		# add priors
 		# ---------------------------------------------------------------------
