@@ -246,7 +246,8 @@ class SFA:
 			r_linear=False,
 			bspline_uprior=None,
 			bspline_gprior=None,
-			bspline_mono=None):
+			bspline_mono=None,
+			bspline_cvcv=None):
 		# check if there enough columns in x cov
 		assert self.k_beta>=2, 'no x cov for bspline.'
 		#
@@ -267,12 +268,22 @@ class SFA:
 		c_bs = np.array([]).reshape(2, 0)
 		#
 		if bspline_mono is not None:
-			C_bs = self.seqDiffMat(self.k_beta_bs)
+			C_bs = self.diff1Mat(self.k_beta_bs)
 			#
 			if bspline_mono == 'increasing':
 				c_bs = self.positiveUPrior(self.k_beta_bs - 1)
 			if bspline_mono == 'decreasing':
 				c_bs = self.negativeUPrior(self.k_beta_bs - 1)
+		#
+		if bspline_cvcv is not None:
+			C_bs = np.vstack((C_bs, self.diff2Mat(self.k_beta_bs)))
+			#
+			if bspline_cvcv == 'convex':
+				c_bs = np.hstack(
+					(c_bs, self.positiveUPrior(self.k_beta_bs - 2)))
+			if bspline_cvcv == 'concave':
+				c_bs = np.hstack(
+					(c_bs, self.negativeUPrior(self.k_beta_bs - 2)))
 		#
 		# constrains: uniform prior on bspline
 		if bspline_uprior is not None:
@@ -333,12 +344,23 @@ class SFA:
 			self.constraint_matrix = C
 			self.constraint_values = c_bs
 
-	def seqDiffMat(self, k):
+	def diff1Mat(self, k):
 		M = np.zeros((k-1,k))
 		diag_id0 = np.diag_indices(M.shape[0])
 		diag_id1 = (diag_id0[0],diag_id0[1]+1)
 		M[diag_id0] = -1.0
 		M[diag_id1] =  1.0
+		#
+		return M
+
+	def diff2Mat(self, k):
+		M = np.zeros((k-2,k))
+		diag_id0 = np.diag_indices(M.shape[0])
+		diag_id1 = (diag_id0[0],diag_id0[1]+1)
+		diag_id2 = (diag_id1[0],diag_id1[1]+1)
+		M[diag_id0] =  1.0
+		M[diag_id1] = -2.0
+		M[diag_id2] =  1.0
 		#
 		return M
 
