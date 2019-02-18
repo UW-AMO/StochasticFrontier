@@ -9,22 +9,26 @@ from pysfa import SFA
 # -----------------------------------------------------------------------------
 np.random.seed(123)
 m = 1000
-k = 2
-x = np.random.randn(m,k)
+k_beta = 2
+k_gama = 1
+k_deta = 1
+x = np.random.randn(m,k_beta)
+z = np.ones((m,k_gama))
+d = np.ones((m,k_deta))
 s = np.ones(m)*0.1
 #
-beta_t = np.random.randn(k)
-su_t = 0.1
-sv_t = 0.1
+beta_t = np.random.randn(k_beta)
+gama_t = np.random.rand(k_gama)
+deta_t = np.random.rand(k_deta)
 
 # create objec
 # -----------------------------------------------------------------------------
-sfa = SFA(m, x, s, vtype='hnl')
-sfa.simData(beta_t, su_t, sv_t)
+sfa = SFA(x, z, d, s, vtype='half_normal')
+sfa.simData(beta_t, gama_t, deta_t)
 
 # apply solver
 # -----------------------------------------------------------------------------
-sfa.fitMaxl()
+sfa.optimizeSFA()
 print('beta_t:', beta_t, ', beta_soln:', sfa.beta_soln)
-print('su_t:', su_t, ', su_soln:', sfa.su_soln)
-print('sv_t:', sv_t, ', sv_soln:', sfa.sv_soln)
+print('gama_t:', gama_t, ', gama_soln:', sfa.gama_soln)
+print('deta_t:', deta_t, ', deta_soln:', sfa.deta_soln)

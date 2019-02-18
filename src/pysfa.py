@@ -1,140 +1,351 @@
 # src file of the pysfa class
 
 import numpy as np
+import ipopt
 
 from numpy             import exp, log, sqrt, pi
 from numpy.linalg      import det, norm, solve
 from scipy.special     import erf, erfc
-from ipopt             import minimize_ipopt
 from sfa_utils.npufunc import log_erfc
 
 
+# SFA Main Class
+# =============================================================================
 class SFA:
 	# constructor
 	# -------------------------------------------------------------------------
-	def __init__(self, m, x, s, vtype='hnl'):
-		# test data consistancy
-		assert x.shape[0] == m, 'x inconsistant with number of mea'
-		assert s.size == m, 'mea stds inconsistant with number of mea'
-		assert det(x.T.dot(x)) > 1e-10,\
-			'model mis-specification, x has redundancy (is singular)'
-		# construct the object
-		self.m = m
-		self.x = x
-		self.s = s
-		self.k = x.shape[1]
+	def __init__(self, x, z, d, s, vtype='half_normal', Y=None, n=None,
+			add_intercept_to_x=False,
+			add_intercept_to_z=False,
+			add_intercept_to_d=False):
+		# add intercept
+		if add_intercept_to_x: x = np.insert(x, 0, 1.0, axis=1)
+		if add_intercept_to_z: z = np.insert(z, 0, 1.0, axis=1)
+		if add_intercept_to_d: d = np.insert(d, 0, 1.0, axis=1)
+		# pass in the parameters
+		self.m = x.shape[0]
+		self.k_beta = x.shape[1]
+		self.k_gama = z.shape[1]
+		self.k_deta = d.shape[1]
+		self.k = self.k_beta + self.k_gama + self.k_deta
+		#
+		self.id_beta = slice(0, self.k_beta)
+		self.id_gama = slice(self.k_beta, self.k_beta + self.k_gama)
+		self.id_deta = slice(self.k_beta + self.k_gama, self.k)
+		#
 		self.vtype = vtype
-		# initialize the uniform prior on variables
-		self.beta_uniform_prior = np.array([[-np.inf, np.inf]]*self.k)
-		self.su_uniform_prior = np.array([0.0, np.inf])
-		self.sv_uniform_prior = np.array([0.0, np.inf])
+		#
+		self.x = x
+		self.z = z
+		self.d = d
+		self.s = s
+		self.v = s**2
+		self.Y = Y
+		#
+		if n is not None:
+			self.n = n
+			self.N = np.sum(n)
+			self.X = np.repeat(self.x, n, axis=0)
+			self.Z = np.repeat(self.z, n, axis=0)
+			self.D = np.repeat(self.d, n, axis=0)
+			self.S = np.repeat(self.s, n, axis=0)
+			self.V = np.repeat(self.v, n, axis=0)
+		else:
+			self.n = np.ones(self.m)
+			self.N = self.m
+			self.X = self.x.copy()
+			self.Z = self.z.copy()
+			self.D = self.d.copy()
+			self.S = self.s.copy()
+			self.V = self.v.copy()
+		#
+		self.check()
+		#
+		self.defaultOptions()
+
+	# check the data consistancy
+	# -------------------------------------------------------------------------
+	def check(self):
+		# check input data dimension
+		assert len(self.x)==self.m, 'x: wrong number of rows.'
+		assert len(self.z)==self.m, 'z: wrong number of rows.'
+		assert len(self.d)==self.m, 'z: wrong number of rows.'
+		assert len(self.s)==self.m, 's: wrong number of elements.'
+		assert len(self.n)==self.m, 'n: wrong number of elements.'
+		#
+		if self.Y is not None:
+			assert len(self.Y)==self.N, 'Y: wrong number of measurements.'
+		#
+		# check the vtype
+		assert self.vtype in ['half_normal', 'exponential'], \
+			'vtype: only support half_normal and exponential vtype.'
+		#
+		# check if all elements in Z is non-negative
+		assert np.all(self.Z>=0.0), 'Z: all elements must be non-negative.'
+		assert np.all(self.D>=0.0), 'D: all elements must be non-negative.'
+		#
+		# check if the system is identifiable
+		ux, sx, vx = np.linalg.svd(self.X)
+		uz, sz, vz = np.linalg.svd(self.Z)
+		ud, sd, vd = np.linalg.svd(self.D)
+		#
+		assert sx[-1] > 1e-10, 'X: model mis-specification, is singular.'
+		assert sz[-1] > 1e-10, 'Z: model mis-specification, is singular.'
+		assert sd[-1] > 1e-10, 'D: model mis-specification, is singular.'
+		#
+		cx = sx[0]/sx[-1]
+		cz = sz[0]/sz[-1]
+		cd = sd[0]/sd[-1]
+		#
+		# print out the data summary
+		print('number of studies:     ', self.m)
+		print('number of measurements:', self.N)
+		print('dimension of beta:     ', self.k_beta)
+		print('dimension of gama:     ', self.k_gama)
+		print('dimension of deta:     ', self.k_deta)
+		print('cond number of X cov:  ', cx)
+		print('cond number of Z cov:  ', cz)
+		print('cond number of D cov:  ', cd)
+
+	def checkUPrior(self, v, vname, vsize=None):
+		if v is None: return None
+		assert v.shape[0]==2, vname+': num of rows must be 2.'
+		assert np.all(v[0]<=v[1]),\
+			vname+': ubounds must be greater or equal than lbounds.'
+		if vsize is not None:
+			assert v.shape[1]==vsize, vname+': wrong num of cols.'
+
+	def checkGPrior(self, v, vname, vsize=None):
+		if v is None: return None
+		assert v.shape[0]==2, vname+': num of rows must be 2.'
+		assert np.all(v[1]>0.0), vname+': variance must be positive.'
+		if vsize is not None:
+			assert v.shape[1]==vsize, vname+': wrong num of cols.'
+
+	# default options
+	# -------------------------------------------------------------------------
+	def defaultOptions(self):
+		# default not using trimming
+		self.use_trimming = False
+		#
+		# default not using bspline
+		self.bspline_uprior = None
+		self.bspline_gprior = None
+		#
+		# default not having constrains
+		self.constraint_matrix = None
+		self.constraint_values = None
+		#
+		# add default uprior (constrains)
+		self.beta_uprior = self.defaultUPrior(self.k_beta)
+		self.gama_uprior = self.positiveUPrior(self.k_gama)
+		self.deta_uprior = self.positiveUPrior(self.k_deta)
+		self.uprior = np.hstack((
+			self.beta_uprior,
+			self.gama_uprior,
+			self.deta_uprior
+			))
+		#
+		self.beta_gprior = self.defaultGPrior(self.k_beta)
+		self.gama_gprior = self.defaultGPrior(self.k_gama)
+		self.deta_gprior = self.defaultGPrior(self.k_deta)
+		self.gprior = np.hstack((
+			self.beta_gprior,
+			self.gama_gprior,
+			self.deta_gprior
+			))
+
+	def defaultUPrior(self, col_len):
+		uprior = np.empty((2,col_len))
+		uprior[0] = -np.inf
+		uprior[1] =  np.inf
+		#
+		return uprior
+
+	def defaultGPrior(self, col_len):
+		gprior = np.empty((2,col_len))
+		gprior[0] = 0.0
+		gprior[1] = np.inf
+		#
+		return gprior
+
+	def positiveUPrior(self, col_len):
+		uprior = np.empty((2,col_len))
+		uprior[0] = 0.0
+		uprior[1] = np.inf
+		#
+		return uprior
+
+	def negativeUPrior(self, col_len):
+		uprior = np.empty((2,col_len))
+		uprior[0] = -np.inf
+		uprior[1] = 0.0
+		#
+		return uprior
+
+	# add uniform prior
+	# -------------------------------------------------------------------------
+	def addUPrior(self, beta_uprior, gama_uprior, deta_uprior):
+		# check input
+		self.checkUPrior(beta_uprior, 'beta_uprior', vsize=self.k_beta)
+		self.checkUPrior(gama_uprior, 'gama_uprior', vsize=self.k_gama)
+		self.checkUPrior(deta_uprior, 'deta_uprior', vsize=self.k_deta)
+		#
+		assert np.all(gama_uprior[0]>=0.0), \
+			'gama_uprior: lbounds for variance must be non-negative'
+		assert np.all(deta_uprior[0]>=0.0), \
+			'deta_uprior: lbounds for variance must be non-negative'
+		#
+		self.beta_uprior = beta_uprior
+		self.gama_uprior = gama_uprior
+		self.deta_uprior = deta_uprior
+		#
+		self.uprior = np.hstack((
+			self.beta_uprior,
+			self.gama_uprior,
+			self.deta_uprior
+			))
+
+	# add gaussian prior
+	# -------------------------------------------------------------------------
+	def addGPrior(self, beta_gprior, gama_gprior):
+		# check input
+		self.checkGPrior(beta_gprior, 'beta_gprior', vsize=self.k_beta)
+		self.checkGPrior(gama_gprior, 'gama_gprior', vsize=self.k_gama)
+		self.checkGPrior(deta_gprior, 'deta_gprior', vsize=self.k_deta)
+		#
+		self.beta_gprior = beta_gprior
+		self.gama_gprior = gama_gprior
+		self.deta_gprior = deta_gprior
+		#
+		self.gprior = np.hstack((
+			self.beta_gprior,
+			self.gama_gprior,
+			self.deta_gprior
+			))
 		
 	# data simulation
 	# -------------------------------------------------------------------------
-	def simData(self, beta_t, su_t, sv_t):
-		assert beta_t.size == self.k, 'wrong size of true beta'
-		assert isinstance(su_t, float), 'true su need to be float scalar'
-		assert isinstance(sv_t, float), 'true sv need to be float scalar'
+	def simData(self, beta_t, gama_t, deta_t):
+		# check input dimension
+		assert len(beta_t)==self.k_beta, 'beta_t: inconsistant with k_beta'
+		assert len(gama_t)==self.k_gama, 'gama_t: inconsistant with k_gama'
+		assert len(deta_t)==self.k_deta, 'deta_t: inconsistant with k_deta'
 		#
-		self.beta_t = beta_t
-		self.su_t   = su_t
-		self.sv_t   = sv_t
-		#
-		self.eps = np.random.randn(self.m)*self.s
-		self.u   = np.random.randn(self.m)*self.su_t
-		if self.vtype == 'hnl':
-			self.v = np.abs(np.random.randn(self.m)*self.sv_t)
-		elif self.vtype == 'exp':
-			self.v = np.random.exponential(scale=self.sv_t, size=self.m)
-		self.y   = self.x.dot(self.beta_t) + self.u - self.v + self.eps
-
-	# maximum likelihood objective function
-	# -------------------------------------------------------------------------
-	def maxlFunc(self, beta, su, sv):
-		# residual
-		r = self.y - self.x.dot(beta)
-		# variances
-		v_su  = self.s**2 + su**2
-		v_suv = self.s**2 + su**2 + sv**2
-		#
-		if self.vtype == 'hnl':
-			return np.sum(
-				0.5*r**2/v_suv + 0.5*log(2.0*pi*v_suv) -
-				log_erfc(sv*r/sqrt(2.0*v_su*v_suv))
-				)
-		elif self.vtype == 'exp':
-			a = (v_su + sv*r)/sqrt(2.0*v_su)
-			# f = np.sum(-0.5*(v_su + 2.0*sv*r)/sv**2 - log(0.5*erfc(a/sv)/sv))
-			f = 0.0
-			# if sv < 1e-2:
-			# 	return np.sum(
-			# 		0.5*r**2/v_su + 0.5*log(4.0*pi*a**2) -\
-			# 		log(1.0-0.5*sv**2/a**2)
-			# 		)
-			# else:
-			# 	return np.sum(
-			# 		-0.5*(v_su + 2.0*sv*r)/sv**2 + log(2.0*sv) -\
-			# 		log_erfc(a/sv)
-			# 		)
-			for i in range(a.size):
-				if abs(sv/a[i]) < 0.1:
-					f += 0.5*r[i]**2/v_su[i] + 0.5*log(4.0*pi*a[i]**2) -\
-						log(1.0-0.5*sv**2/a[i]**2)
-				else:
-					f += -0.5*(v_su[i] + 2.0*sv*r[i])/sv**2 -\
-						log(0.5*erfc(a[i]/sv)/sv)
-			
-			return f
-
-	# maximum likelihood objective function for solver
-	# -------------------------------------------------------------------------
-	def solver_maxlFunc(self, z):
-		# extract variables
-		beta = z[:self.k]
-		su   = z[-2]
-		sv   = z[-1]
-		#
-		return self.maxlFunc(beta, su, sv)
-
-	# maximum likelihood gradient function for solver
-	# -------------------------------------------------------------------------
-	def solver_maxlGrad(self, z, eps=1e-10):
-		grad = np.empty(z.shape)
-		z_c  = z.copy() + 0j
-		#
-		for i in range(z.size):
-			z_c[i] += 1j*eps
-			#
-			func = self.solver_maxlFunc(z_c)
-			grad[i] = func.imag/eps
-			#
-			z_c[i] -= 1j*eps
-		#
-		return grad
+		self.E = np.random.randn(self.N)*self.S
+		self.EU = np.random.randn(self.N)*sqrt(self.Z.dot(gama_t))
+		if self.vtype == 'half_normal':
+			self.EV = np.abs(np.random.randn(self.N)*\
+				sqrt(self.D.dot(deta_t)))
+		if self.vtype == 'exponential':
+			self.EV = np.random.exponential(size=self.N)*\
+				sqrt(self.D.dot(deta_t))
+		self.Y = self.X.dot(beta_t) + self.EU - self.EV + self.E
 
 	# optimize the maximum likelihood
 	# -------------------------------------------------------------------------
-	def fitMaxl(self):
-		# initialize the parameters
-		beta = solve(self.x.T.dot(self.x), self.x.T.dot(self.y))
-		su   = 0.0
-		sv   = 0.0
-		z0   = np.hstack((beta, su, sv))
-		# non-negative constrain on su and sv
-		bounds = np.vstack((
-			self.beta_uniform_prior,
-			self.su_uniform_prior,
-			self.sv_uniform_prior
-			))
-		# apply ipopt solver
-		res = minimize_ipopt(
-			self.solver_maxlFunc,
-			z0,
-			jac=self.solver_maxlGrad,
-			bounds=bounds,
-			options={'print_level': 0}
-			)
+	def optimizeSFA(self, print_level=0):
+		# create problem
+		if self.constraint_matrix is None:
+			handle = ipopt.problem(
+				n=self.k,
+				m=0,
+				problem_obj=sfaObj(self),
+				lb=self.uprior[0],
+				ub=self.uprior[1]
+				)
+		else:
+			handle = ipopt.problem(
+				n=self.k,
+				m=self.constraint_matrix.shape[0],
+				problem_obj=sfaObj(self),
+				lb=self.uprior[0],
+				ub=self.uprior[1],
+				cl=self.constraint_values[0],
+				cu=self.constraint_values[1]
+				)
+		# add options
+		handle.addOption('print_level', print_level)
+		# initial point
+		beta0 = np.linalg.solve(self.X.T.dot(self.X), self.X.T.dot(self.Y))
+		gama0 = np.zeros(self.k_gama)
+		deta0 = np.zeros(self.k_deta)
+		x0 = np.hstack((beta0, gama0, deta0))
+		# solver the problem
+		soln, info = handle.solve(x0)
 		# extract the solution
-		self.beta_soln = res.x[:self.k]
-		self.su_soln   = res.x[-2]
-		self.sv_soln   = res.x[-1]
+		self.beta_soln = soln[self.id_beta]
+		self.gama_soln = soln[self.id_gama]
+		self.deta_soln = soln[self.id_deta]
+		self.soln_info = info
+
+# IPOPT objective: maximum likelihood
+# =============================================================================
+class sfaObj:
+	# constructor
+	# -------------------------------------------------------------------------
+	def __init__(self, sfa):
+		self.sfa = sfa
+		#
+		if sfa.constraint_matrix is not None:
+			C = sfa.constraint_matrix
+			self.constraints = lambda x: C.dot(x)
+			self.jacobian = lambda x: C.reshape(C.size)
+
+	# objective
+	# -------------------------------------------------------------------------
+	def objective(self, x):
+		sfa = self.sfa
+		# extract beta, gama and deta
+		beta = x[sfa.id_beta]
+		gama = x[sfa.id_gama]
+		deta = x[sfa.id_deta]
+		# residual and all variances and stds
+		r  = sfa.Y - sfa.X.dot(beta)
+		#
+		vu = sfa.Z.dot(gama)
+		vv = sfa.D.dot(deta)
+		#
+		su = sqrt(vu)
+		sv = sqrt(vv)
+		#
+		v1 = sfa.V + vu
+		v2 = sfa.V + vu + vv
+		#
+		# likelihood
+		# ---------------------------------------------------------------------
+		if sfa.vtype == 'half_normal':
+			f = np.sum(0.5*r**2/v2 + 0.5*log(2.0*pi*v2) -
+				log_erfc(r*sv/sqrt(2.0*v1*v2)))
+		if sfa.vtype == 'exponential':
+			f = 0.0
+			a = (v1 + r*sv)/sqrt(2.0*v1)
+			for i in range(a.size):
+				if abs(sv[i]/a[i]) < 0.1:
+					f += 0.5*r[i]**2/v1[i] + 0.5*log(4.0*pi*a[i]**2) -\
+						log(1.0-0.5*vv[i]/a[i]**2)
+				else:
+					f += -0.5*(v1[i] + 2.0*r[i]*sv[i])/vv[i] -\
+						log(0.5*erfc(a[i]/sv[i])/sv[i])
+		#
+		# add priors
+		# ---------------------------------------------------------------------
+		f += np.sum( (beta - sfa.beta_gprior[0])**2/sfa.beta_gprior[1] )
+		f += np.sum( (gama - sfa.gama_gprior[0])**2/sfa.gama_gprior[1] )
+		f += np.sum( (deta - sfa.deta_gprior[0])**2/sfa.deta_gprior[1] )
+		#
+		return f
+
+	# gradient
+	# -------------------------------------------------------------------------
+	def gradient(self, x, eps=1e-10):
+		g = np.empty(x.size)
+		z = x + 0j
+		#
+		for i in range(x.size):
+			z[i] += 1j*eps
+			f     = self.objective(z)
+			g[i]  = f.imag/eps
+			z[i] -= 1j*eps
+		#
+		return g
