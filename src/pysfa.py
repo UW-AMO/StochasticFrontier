@@ -8,7 +8,7 @@ from numpy.linalg      import det, norm, solve
 from scipy.special     import erf, erfc
 from scipy.optimize    import bisect
 from bspline           import *
-from sfa_utils.npufunc import log_erfc
+from sfa_utils.npufunc import log_erfc, special
 
 
 # SFA Main Class
@@ -412,8 +412,8 @@ class SFA:
 		handle.addOption('print_level', print_level)
 		# initial point
 		beta0 = np.linalg.solve(self.X.T.dot(self.X), self.X.T.dot(self.Y))
-		gama0 = np.zeros(self.k_gama)
-		deta0 = np.zeros(self.k_deta)
+		gama0 = np.repeat(0.01, self.k_gama)
+		deta0 = np.repeat(0.01, self.k_deta)
 		x0 = np.hstack((beta0, gama0, deta0))
 		# solver the problem
 		soln, info = handle.solve(x0)
@@ -478,15 +478,10 @@ class SFA:
 			g = 0.5*r**2/v2 + 0.5*log(2.0*pi*v2) - \
 				log_erfc(r*sv/sqrt(2.0*v1*v2))
 		if self.vtype == 'exponential':
-			g = np.zeros(self.N)
 			a = (v1 + r*sv)/sqrt(2.0*v1)
-			for i in range(a.size):
-				if abs(sv[i]/a[i]) < 0.1:
-					g[i] = 0.5*r[i]**2/v1[i] + 0.5*log(4.0*pi*a[i]**2) -\
-						log(1.0-0.5*vv[i]/a[i]**2)
-				else:
-					g[i] = -0.5*(v1[i] + 2.0*r[i]*sv[i])/vv[i] -\
-						log(0.5*erfc(a[i]/sv[i])/sv[i])
+			b = a/sv
+			abs_a = sqrt(a*a)
+			g = 0.5*r**2/v1 + log(2.0*abs_a) - special(b)
 		#
 		return g
 

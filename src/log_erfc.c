@@ -90,14 +90,79 @@ static void cdouble_log_erfc(char **args, npy_intp *dimensions,
     }
 }
 
+static void double_special(char **args, npy_intp *dimensions,
+                         npy_intp* steps, void* data)
+{
+    npy_intp i;
+    npy_intp n = dimensions[0];
+    char *in = args[0], *out = args[1];
+    npy_intp in_step = steps[0], out_step = steps[1];
+
+    double x;
+    double sqrt_pi = 1.7724538509055159;
+
+    for (i = 0; i < n; i++) {
+        /*BEGIN main ufunc computation*/
+        x = *(double *)in;
+        if (x > 25.0) {
+            *((double *)out) = -log(sqrt_pi) - 0.5/(x*x);
+        } else {
+            *((double *)out) = x*x + log(erfc(x)*fabs(x));
+        }
+        /*END main ufunc computation*/
+
+        in += in_step;
+        out += out_step;
+    }
+}
+
+static void cdouble_special(char **args, npy_intp *dimensions,
+                         npy_intp* steps, void* data)
+{
+    npy_intp i;
+    npy_intp n = dimensions[0];
+    char *in = args[0], *out = args[1];
+    npy_intp in_step = steps[0], out_step = steps[1];
+
+    double complex x;
+    double x_r;
+    double x_i;
+    double sqrt_pi = 1.7724538509055159;
+
+    for (i = 0; i < n; i++) {
+        /*BEGIN main ufunc computation*/
+        x = *(double complex *)in;
+        x_r = creal(x);
+        x_i = cimag(x);
+        if (x_r > 25.0) {
+            *((double complex *)out) = -log(sqrt_pi) - 0.5/(x_r*x_r) + \ 
+                I*x_i/(x_r*x_r*x_r);
+        } else {
+            *((double complex *)out) = x_r*x_r + log(erfc(x_r)*fabs(x_r)) + \
+                I*x_i*(2.0*x_r + (-2.0*exp(-x_r*x_r)*x_r/sqrt_pi + \
+                    erfc(x_r))/(x_r*erfc(x_r)));
+        }
+        /*END main ufunc computation*/
+        in += in_step;
+        out += out_step;
+    }
+}
+
 
 /*This gives pointers to the above functions*/
-PyUFuncGenericFunction funcs[2] = {&double_log_erfc,
-                                &cdouble_log_erfc};
+PyUFuncGenericFunction log_erfc_funcs[2] = {&double_log_erfc,
+                                &cdouble_log_erfc,};
 
-static char types[4] = {NPY_DOUBLE,NPY_DOUBLE,
+static char log_erfc_types[4] = {NPY_DOUBLE,NPY_DOUBLE,
                         NPY_CDOUBLE,NPY_CDOUBLE};
-static void *data[2] = {NULL, NULL};
+static void *log_erfc_data[2] = {NULL, NULL};
+
+PyUFuncGenericFunction special_funcs[2] = {&double_special,
+                                &cdouble_special,};
+
+static char special_types[4] = {NPY_DOUBLE,NPY_DOUBLE,
+                        NPY_CDOUBLE,NPY_CDOUBLE};
+static void *special_data[2] = {NULL, NULL};
 
 #if PY_VERSION_HEX >= 0x03000000
 static struct PyModuleDef moduledef = {
@@ -114,7 +179,7 @@ static struct PyModuleDef moduledef = {
 
 PyMODINIT_FUNC PyInit_npufunc(void)
 {
-    PyObject *m, *log_erfc, *d;
+    PyObject *m, *log_erfc, *special, *d;
     m = PyModule_Create(&moduledef);
     if (!m) {
         return NULL;
@@ -123,21 +188,30 @@ PyMODINIT_FUNC PyInit_npufunc(void)
     import_array();
     import_umath();
 
-    log_erfc = PyUFunc_FromFuncAndData(funcs, data, types, 4, 1, 1,
+    log_erfc = PyUFunc_FromFuncAndData(log_erfc_funcs,
+                                    log_erfc_data,
+                                    log_erfc_types, 2, 1, 1,
                                     PyUFunc_None, "log_erfc",
                                     "log_erfc_docstring", 0);
+    special = PyUFunc_FromFuncAndData(special_funcs,
+                                    special_data,
+                                    special_types, 2, 1, 1,
+                                    PyUFunc_None, "special",
+                                    "special_docstring", 0);
 
     d = PyModule_GetDict(m);
 
     PyDict_SetItemString(d, "log_erfc", log_erfc);
+    PyDict_SetItemString(d, "special", special);
     Py_DECREF(log_erfc);
+    Py_DECREF(special);
 
     return m;
 }
 #else
 PyMODINIT_FUNC initnpufunc(void)
 {
-    PyObject *m, *log_erfc, *d;
+    PyObject *m, *log_erfc, *special, *d;
 
 
     m = Py_InitModule("npufunc", LogErfcMethods);
@@ -148,13 +222,22 @@ PyMODINIT_FUNC initnpufunc(void)
     import_array();
     import_umath();
 
-    log_erfc = PyUFunc_FromFuncAndData(funcs, data, types, 4, 1, 1,
+    log_erfc = PyUFunc_FromFuncAndData(log_erfc_funcs,
+                                    log_erfc_data,
+                                    log_erfc_types, 2, 1, 1,
                                     PyUFunc_None, "log_erfc",
                                     "log_erfc_docstring", 0);
+    special = PyUFunc_FromFuncAndData(special_funcs,
+                                    special_data,
+                                    special_types, 2, 1, 1,
+                                    PyUFunc_None, "special",
+                                    "special_docstring", 0);
 
     d = PyModule_GetDict(m);
 
     PyDict_SetItemString(d, "log_erfc", log_erfc);
+    PyDict_SetItemString(d, "special", special);
     Py_DECREF(log_erfc);
+    Py_DECREF(special);
 }
 #endif

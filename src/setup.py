@@ -31,7 +31,6 @@ def configuration(parent_package='', top_path=None):
     from numpy.distutils.misc_util import Configuration
     from numpy.distutils.misc_util import get_info
 
-    #Necessary for the half-float d-type.
     info = get_info('npymath')
 
     config = Configuration('sfa_utils',
