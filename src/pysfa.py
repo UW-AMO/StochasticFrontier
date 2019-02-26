@@ -138,6 +138,10 @@ class SFA:
 		self.constraint_matrix = None
 		self.constraint_values = None
 		#
+		# default solution
+		self.soln = None
+		self.info = 'no solution, haven\'t run the solver yet.'
+		#
 		# add default uprior (constrains)
 		self.beta_uprior = self.defaultUPrior(self.k_beta)
 		self.gama_uprior = self.positiveUPrior(self.k_gama)
@@ -173,7 +177,7 @@ class SFA:
 
 	def positiveUPrior(self, col_len):
 		uprior = np.empty((2,col_len))
-		uprior[0] = 0.0
+		uprior[0] = 1e-8
 		uprior[1] = np.inf
 		#
 		return uprior
@@ -181,7 +185,7 @@ class SFA:
 	def negativeUPrior(self, col_len):
 		uprior = np.empty((2,col_len))
 		uprior[0] = -np.inf
-		uprior[1] = 0.0
+		uprior[1] = -1e-8
 		#
 		return uprior
 
@@ -388,7 +392,7 @@ class SFA:
 
 	# optimization: the maximum likelihood
 	# -------------------------------------------------------------------------
-	def optimizeSFA(self, print_level=0):
+	def optimizeSFA(self, print_level=0, max_iter=50):
 		# create problem
 		if self.constraint_matrix is None:
 			handle = ipopt.problem(
@@ -410,11 +414,15 @@ class SFA:
 				)
 		# add options
 		handle.addOption('print_level', print_level)
+		if max_iter is not None: handle.addOption('max_iter', max_iter)
 		# initial point
-		beta0 = np.linalg.solve(self.X.T.dot(self.X), self.X.T.dot(self.Y))
-		gama0 = np.repeat(0.01, self.k_gama)
-		deta0 = np.repeat(0.01, self.k_deta)
-		x0 = np.hstack((beta0, gama0, deta0))
+		if self.soln is None:
+			beta0 = np.linalg.solve(self.X.T.dot(self.X), self.X.T.dot(self.Y))
+			gama0 = np.repeat(0.01, self.k_gama)
+			deta0 = np.repeat(0.01, self.k_deta)
+			x0 = np.hstack((beta0, gama0, deta0))
+		else:
+			x0 = self.soln
 		# solver the problem
 		soln, info = handle.solve(x0)
 		# extract the solution
@@ -450,9 +458,11 @@ class SFA:
 			#
 			self.optimizeSFA()
 			g = self.wGrad(self.soln)
+			obj = self.w.dot(g)
 			#
 			if verbose:
-				print('iter %4d, err %8.2e' % (iter_count, err))
+				print('iter %4d, obj %8.2e, err %8.2e' %
+					(iter_count, obj, err))
 			#
 			if iter_count >= max_iter:
 				print('trimming reach maximum number of iterations')
@@ -467,6 +477,7 @@ class SFA:
 		#
 		vu = self.Z.dot(gama)
 		vv = self.D.dot(deta)
+		if deta[0] < 0.0: print(deta)
 		#
 		su = sqrt(vu)
 		sv = sqrt(vv)
@@ -495,6 +506,21 @@ class SFA:
 		x = bisect(f, a, b)
 		#
 		return np.maximum(np.minimum(w - x, 1.0), 0.0)
+
+	# post analysis
+	# -------------------------------------------------------------------------
+	def estimateRE(self):
+		r  = self.X.dot(self.beta_soln) - self.Y
+		vu = self.Z.dot(self.gama_soln)
+		vv = self.D.dot(self.deta_soln)
+		#
+		if self.vtype == 'half_normal':
+			self.v_soln = np.maximum(0.0, vv*r/(self.V + vv + vu))
+		if self.vtype == 'exponential':
+			self.v_soln = np.maximum(0.0, r - (self.V + vu)/np.sqrt(vv))
+		#
+		self.u_soln = vu*(self.v_soln - r)/(self.V + vu)
+		
 
 # IPOPT objective: maximum likelihood
 # =============================================================================
