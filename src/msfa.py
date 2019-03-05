@@ -11,6 +11,7 @@ from sfa_utils.npufunc import log_erfc, special
 from pybs import *
 
 from msfa_prior import *
+from msfa_utils import special
 
 
 # SFA Main Class
@@ -417,8 +418,12 @@ class MSFA:
 		V1 = self.V + Vu
 		V2 = self.V + Vu + Vv
 		#
-		L = 0.5*R**2/V2 + 0.5*np.log(2.0*np.pi*V2) - \
-			log_erfc(R*Sv/np.sqrt(2.0*V1*V2))
+		if self.ftype == 'upper':
+			L = 0.5*R**2/V2 + 0.5*np.log(2.0*np.pi*V2) - \
+				self.log1mErf(R*Sv/np.sqrt(2.0*V1*V2))
+		if self.ftype == 'lower':
+			L = 0.5*R**2/V2 + 0.5*np.log(2.0*np.pi*V2) - \
+				self.log1pErf(R*Sv/np.sqrt(2.0*V1*V2))
 		#
 		return L
 
@@ -436,4 +441,18 @@ class MSFA:
 				self.qpenalty_values[1]
 		#
 		return f
+
+	# ultility functions
+	# -------------------------------------------------------------------------
+	def log1pErf(self, x):
+		if np.isrealobj(x):
+			return special.rlog_1p_erf(x.size, x)
+		if np.iscomplexobj(x):
+			return special.clog_1p_erf(x.size, x)
+
+	def log1mErf(self, x):
+		if np.isrealobj(x):
+			return special.rlog_1m_erf(x.size, x)
+		if np.iscomplexobj(x):
+			return special.clog_1m_erf(x.size, x)
 
