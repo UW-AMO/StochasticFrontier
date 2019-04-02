@@ -51,7 +51,7 @@ def optimizeSFAWithTrimming(msfa, h, stepsize=1.0, max_iter=100, tol=1e-6,
 	msfa.addTrimming(h)
 	#
 	# initialize the iteration
-	optimizeSFA()
+	optimizeSFA(msfa)
 	g = wGrad(msfa.soln)
 	#
 	# start iteration
@@ -67,7 +67,7 @@ def optimizeSFAWithTrimming(msfa, h, stepsize=1.0, max_iter=100, tol=1e-6,
 		#
 		np.copyto(msfa.w, w_new)
 		#
-		optimizeSFA()
+		optimizeSFA(msfa)
 		g = wGrad(msfa.soln)
 		obj = msfa.w.dot(g)
 		#
