@@ -2,6 +2,7 @@
 
 import numpy as np
 import ipopt
+import copy
 
 from numpy             import exp, log, sqrt, pi
 from numpy.linalg      import det, norm, solve
@@ -131,8 +132,15 @@ class SFA:
 		self.use_trimming = False
 		#
 		# default not using bspline
+		self.bspline_knots = None
+		self.bspline_degree = None
+		self.bspline_col_id = None
 		self.bspline_uprior = None
 		self.bspline_gprior = None
+		self.bspline_mono = None
+		self.bspline_cvcv = None
+		self.bspline_l_linear = None
+		self.bspline_r_linear = None
 		#
 		# default not having constrains
 		self.constraint_matrix = None
@@ -252,6 +260,17 @@ class SFA:
 			bspline_gprior=None,
 			bspline_mono=None,
 			bspline_cvcv=None):
+		# record the spline settings
+		self.bspline_knots = knots
+		self.bspline_degree = degree
+		self.bspline_col_id = col_id
+		self.bspline_l_linear = l_linear
+		self.bspline_r_linear = r_linear
+		self.bspline_uprior = bspline_uprior
+		self.bspline_gprior = bspline_gprior
+		self.bspline_mono = bspline_mono
+		self.bspline_cvcv = bspline_cvcv
+		#
 		# check if there enough columns in x cov
 		assert self.k_beta>=2, 'no x cov for bspline.'
 		#
@@ -472,12 +491,12 @@ class SFA:
 		beta = x[self.id_beta]
 		gama = x[self.id_gama]
 		deta = x[self.id_deta]
+		deta = np.maximum(deta, 0.0)
 		# residual and all variances and stds
 		r  = self.Y - self.X.dot(beta)
 		#
 		vu = self.Z.dot(gama)
 		vv = self.D.dot(deta)
-		if deta[0] < 0.0: print(deta)
 		#
 		su = sqrt(vu)
 		sv = sqrt(vv)
@@ -520,7 +539,6 @@ class SFA:
 			self.v_soln = np.maximum(0.0, r - (self.V + vu)/np.sqrt(vv))
 		#
 		self.u_soln = vu*(self.v_soln - r)/(self.V + vu)
-		
 
 # IPOPT objective: maximum likelihood
 # =============================================================================
@@ -574,3 +592,109 @@ class sfaObj:
 			z[i] -= 1j*eps
 		#
 		return g
+
+# Post analysis the result
+# =============================================================================
+def predictData(sfa, X=None, Z=None, D=None,
+	add_intercept_to_x=False,
+	add_intercept_to_z=False,
+	add_intercept_to_d=False,
+	use_bspline=False,
+	include_random_effect=True,
+	sample_size=1000,
+	q=0.95,
+	beta_sample=None):
+	
+	assert (X is None and Z is None and D is None) or \
+		   (X is not None and Z is not None and D is not None), \
+		   'X, Z, D: either provide all of them or none of them.'
+
+	if X is None:
+		X = sfa.X.copy()
+		Z = sfa.Z.copy()
+		D = sfa.D.copy()
+	else:
+		S = np.ones(X.size)
+		sfa_pred = SFA(X, Z, D, S, vtype=sfa.vtype,
+			add_intercept_to_x=add_intercept_to_x,
+			add_intercept_to_z=add_intercept_to_z,
+			add_intercept_to_d=add_intercept_to_d)
+		if use_bspline:
+			sfa_pred.addBSpline(
+				sfa.bsplin_knots, sfa.bspline_degree,
+				col_id=sfa.bspline_col_id,
+				l_linear=sfa.bspline_l_linear,
+				r_linear=sfa.bspline_r_linear,
+				bspline_uprior=sfa.bspline_uprior,
+				bspline_gprior=sfa.bspline_gprior,
+				bspline_mono=sfa.bspline_mono,
+				bspline_cvcv=sfa.bspline_cvcv)
+		#
+		X = sfa_pred.X.copy()
+		Z = sfa_pred.Z.copy()
+		D = sfa_pred.D.copy()
+
+	if beta_sample is None:
+		beta_sample = sampleBeta(sfa, sample_size)
+	assert beta_sample.shape[0] == sample_size,\
+		'beta_sample: length must be consistant with sample_size.'
+
+	if include_random_effect:
+		re_sample = sampleRE(sfa, Z, D, sample_size)
+	else:
+		re_sample = 0.0
+
+	# sample observation
+	N = X.shape[0]
+	y_mean = np.zeros(N)
+	y_negp = np.zeros(N)
+	y_intv = np.zeros((N, 2))
+	#
+	y_sample = X.dot(beta_sample.T) + re_sample
+	#
+	for i in range(N):
+		y_mean[i] = np.mean(y_sample[i])
+		y_negp[i] = np.sum(y_sample[i] < 0.0)/sample_size
+		y_intv[i] = qIntv(y_sample[i], q)
+	#
+	return beta_sample, re_sample, y_sample, y_mean, y_negp, y_intv
+
+def qIntv(y_sample, q):
+	assert 0.0<=q<=1.0, 'q: wrong percentage'
+	#
+	sample_size=y_sample.size
+	#
+	p = 0.5*(1.0 - q)
+	head = int(p*sample_size)
+	tail = head
+	#
+	y_sample_clip = np.sort(y_sample)[head:-tail]
+	#
+	return np.array([y_sample_clip[0], y_sample_clip[-1]])
+
+def sampleRE(sfa, Z, D, sample_size):
+
+	EU = np.random.randn(Z.shape[0], sample_size)*\
+		sqrt(Z.dot(sfa.gama_soln)).reshape(Z.shape[0], 1)
+	if sfa.vtype == 'half_normal':
+		EV = np.abs(np.random.randn(D.shape[0], sample_size)*\
+			sqrt(D.dot(sfa.deta_soln)).reshape(D.shape[0], 1))
+	if sfa.vtype == 'exponential':
+		EV = np.random.exponential(size=(D.shape[0], sample_size))*\
+			sqrt(D.dot(sfa.deta_soln)).reshape(D.shape[0], 1)
+	#
+	re_sample = EU - EV
+	#
+	return re_sample
+
+def sampleBeta(sfa, sample_size):
+	beta_sample = np.zeros((sample_size, sfa.k_beta))
+	sfa_copy = copy.deepcopy(sfa)
+
+	for i in range(sample_size):
+		sfa_copy.simData(sfa.beta_soln, sfa.gama_soln, sfa.deta_soln)
+		sfa_copy.optimizeSFA()
+		beta_sample[i] = sfa_copy.beta_soln
+		print('sample beta progress %0.2f' % ((i+1.0)/sample_size), end='\r')
+
+	return beta_sample	
