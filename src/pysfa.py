@@ -391,6 +391,27 @@ class SFA:
 		X = np.delete(X, del_id, 1)
 		return np.hstack((Y, X))
 
+	# forcast data
+	# -------------------------------------------------------------------------
+	def forcastData(self, X, v, add_intercept_to_x=False):
+		assert X.ndim == 2
+		assert X.shape[0] == v.size, 'x and v should have same size.'
+		if add_intercept_to_x: X = np.insert(X, 0, 1.0, axis=1)
+
+		X_bs, H_bs = dmatrix(X[:, self.bspline_col_id],
+							 self.bspline_knots,
+							 self.bspline_degree,
+							 l_linear=self.bspline_l_linear,
+							 r_linear=self.bspline_r_linear)
+
+		del_id = [self.bspline_col_id]
+		if np.all(X[:,0]==1.0): del_id.append(0)
+
+		X = self.delThenStack(X, X_bs, del_id)
+
+		return X.dot(self.beta_soln) - v
+
+
 	# data simulation
 	# -------------------------------------------------------------------------
 	def simData(self, beta_t, gama_t, deta_t):
