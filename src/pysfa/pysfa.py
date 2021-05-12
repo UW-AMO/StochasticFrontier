@@ -1,14 +1,14 @@
 # src file of the pysfa class
 
 import numpy as np
-import ipopt
+import cyipopt
 import copy
 
 from numpy             import exp, log, sqrt, pi
 from numpy.linalg      import det, norm, solve
 from scipy.special     import erf, erfc
 from scipy.optimize    import bisect
-from bspline           import *
+from .bspline          import *
 from sfa_utils.npufunc import log_erfc, special
 
 
@@ -435,7 +435,7 @@ class SFA:
 	def optimizeSFA(self, print_level=0, max_iter=50):
 		# create problem
 		if self.constraint_matrix is None:
-			handle = ipopt.problem(
+			handle = cyipopt.Problem(
 				n=self.k,
 				m=0,
 				problem_obj=sfaObj(self),
@@ -443,7 +443,7 @@ class SFA:
 				ub=self.uprior[1]
 				)
 		else:
-			handle = ipopt.problem(
+			handle = cyipopt.Problem(
 				n=self.k,
 				m=self.constraint_matrix.shape[0],
 				problem_obj=sfaObj(self),
@@ -453,8 +453,8 @@ class SFA:
 				cu=self.constraint_values[1]
 				)
 		# add options
-		handle.addOption('print_level', print_level)
-		if max_iter is not None: handle.addOption('max_iter', max_iter)
+		handle.add_option('print_level', print_level)
+		if max_iter is not None: handle.add_option('max_iter', max_iter)
 		# initial point
 		if self.soln is None:
 			beta0 = np.linalg.solve(self.X.T.dot(self.X), self.X.T.dot(self.Y))
@@ -561,7 +561,7 @@ class SFA:
 		#
 		self.u_soln = vu*(self.v_soln - r)/(self.V + vu)
 
-# IPOPT objective: maximum likelihood
+# cyipopt objective: maximum likelihood
 # =============================================================================
 class sfaObj:
 	# constructor
